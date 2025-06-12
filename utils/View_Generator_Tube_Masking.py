@@ -1,78 +1,130 @@
 import torch
 import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 import random
 import numpy as np
-from einops import rearrange
+
 
 class TubeMaskGenerator:
-    def __init__(self, image_size, mask_ratio, tube_size=(2, 8, 8)):
-        self.T, self.H, self.W = tube_size
-        self.num_tubes = (image_size[0] // self.T) * (image_size[1] // self.H) * (image_size[2] // self.W)
-        self.num_mask = int(mask_ratio * self.num_tubes)
-        self.image_size = image_size
-        self.tube_size = tube_size
+    def __init__(self, view_clip_size_thw, mask_ratio, tube_size_thw=(2, 8, 8)):
+        self.T_view, self.H_view, self.W_view = view_clip_size_thw
+        self.T_tube, self.H_tube, self.W_tube = tube_size_thw
 
-    def __call__(self):
-        mask = torch.zeros(self.num_tubes, dtype=torch.bool)
-        idx = torch.randperm(self.num_tubes)[:self.num_mask]
-        mask[idx] = True
-        mask = mask.view(
-            self.image_size[0] // self.T,
-            self.image_size[1] // self.H,
-            self.image_size[2] // self.W
-        )
-        return mask
+        assert self.T_view % self.T_tube == 0, "View frames must be divisible by tube temporal size"
+        assert self.H_view % self.H_tube == 0, "View height must be divisible by tube spatial height"
+        assert self.W_view % self.W_tube == 0, "View width must be divisible by tube spatial width"
+
+        self.num_tubes_t = self.T_view // self.T_tube
+        self.num_tubes_h = self.H_view // self.H_tube
+        self.num_tubes_w = self.W_view // self.W_tube
+        self.num_tubes_total = self.num_tubes_t * self.num_tubes_h * self.num_tubes_w
+        self.num_mask = int(mask_ratio * self.num_tubes_total)
+
+    def __call__(self):  # Returns boolean mask: True if masked
+
+        mask_flat = torch.zeros(self.num_tubes_total, dtype=torch.bool)
+        if self.num_mask > 0 and self.num_mask <= self.num_tubes_total:  # Ensure num_mask is valid for randperm
+            idx = torch.randperm(self.num_tubes_total)[:self.num_mask]
+            mask_flat[idx] = True
+        elif self.num_mask > self.num_tubes_total:  # Should not happen if mask_ratio <= 1
+            mask_flat[:] = True  # Mask all if num_mask is too large
+
+        # Reshape the mask.
+        if self.num_tubes_t == 1:
+            return mask_flat.view(self.num_tubes_h, self.num_tubes_w)
+        else:
+            return mask_flat.view(self.num_tubes_t, self.num_tubes_h, self.num_tubes_w)
+
 
 class ViewGenerator:
-    def __init__(self, transform, global_frames=8, local_frames=4, image_size=(8, 224, 224)):
-        self.transform = transform
+    def __init__(self, image_size_hw=(224, 224),
+                 global_frames=8, local_frames=4, num_local_views=2,
+                 global_mask_ratio_rho=0.9, local_mask_ratio_rho=0.9,
+                 tube_patch_size=16,  # Spatial patch size P for ViT
+                 fagtm_gamma=0.6):
+        self.image_size_hw = image_size_hw
         self.global_frames = global_frames
         self.local_frames = local_frames
-        self.image_size = image_size  # (T, H, W)
+        self.num_local_views = num_local_views
 
-    def generate_views(self, video_tensor):
-        # video_tensor shape: [T, C, H, W]
-        assert video_tensor.shape[0] >= self.global_frames
+        self.base_frame_transform = T.Compose([
+            T.Resize(self.image_size_hw, interpolation=T.InterpolationMode.BICUBIC),
+            T.ToTensor(),
+        ])
+        self.clip_augmentation_transform = T.Compose([
+            T.RandomHorizontalFlip(p=0.5),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
-        # Global view
-        t_global_start = random.randint(0, video_tensor.shape[0] - self.global_frames)
-        global_view = video_tensor[t_global_start:t_global_start + self.global_frames]
+        self.global_mask_ratio_rho = global_mask_ratio_rho
+        self.local_mask_ratio_rho = local_mask_ratio_rho
+        self.tube_patch_size = tube_patch_size
+        self.fagtm_gamma = fagtm_gamma
 
-        # Local view
-        t_local_start = random.randint(0, video_tensor.shape[0] - self.local_frames)
-        local_view = video_tensor[t_local_start:t_local_start + self.local_frames]
+        self.rtm_generator_local = TubeMaskGenerator(
+            view_clip_size_thw=(1, self.image_size_hw[0], self.image_size_hw[1]),
+            mask_ratio=self.local_mask_ratio_rho,
+            tube_size_thw=(1, self.tube_patch_size, self.tube_patch_size)
+        )
 
-        global_aug = torch.stack([self.transform(frame) for frame in global_view])
-        local_aug = torch.stack([self.transform(frame) for frame in local_view])
+    def generate_views(self, video_frames_list_pil):
+        num_total_frames = len(video_frames_list_pil)
+        video_tensor_transformed = torch.stack([self.base_frame_transform(frame) for frame in video_frames_list_pil])
 
-        return global_aug, local_aug
-
-    def generate_masks(self, method='rtm', attention_map=None):
-        if method == 'rtm':
-            mask_gen = TubeMaskGenerator(self.image_size, mask_ratio=0.6)
-            return mask_gen()
-        elif method == 'fagtm' and attention_map is not None:
-            return self.fagtm_mask(attention_map)
+        global_view_clip = None
+        if num_total_frames >= self.global_frames:
+            start_idx_g = random.randint(0, num_total_frames - self.global_frames)
+            global_view_clip_raw = video_tensor_transformed[start_idx_g: start_idx_g + self.global_frames]
+            global_view_clip = torch.stack([self.clip_augmentation_transform(frame) for frame in global_view_clip_raw])
         else:
-            raise NotImplementedError("Unsupported masking method or missing attention map.")
+            indices = torch.arange(0, self.global_frames) % num_total_frames
+            global_view_clip_raw = video_tensor_transformed[indices]
+            global_view_clip = torch.stack([self.clip_augmentation_transform(frame) for frame in global_view_clip_raw])
 
-    def fagtm_mask(self, attention_map):
-        # attention_map: [T, H, W], higher means more important
-        flat = attention_map.view(-1)
-        _, indices = torch.topk(flat, int(flat.size(0) * 0.4), largest=False)  # mask least important
-        mask = torch.zeros_like(flat, dtype=torch.bool)
-        mask[indices] = True
-        return mask.view(attention_map.shape)
+        local_view_clips = []
+        for _ in range(self.num_local_views):
+            if num_total_frames >= self.local_frames:
+                start_idx_l = random.randint(0, num_total_frames - self.local_frames)
+                local_view_clip_raw = video_tensor_transformed[start_idx_l: start_idx_l + self.local_frames]
+                local_view_clips.append(
+                    torch.stack([self.clip_augmentation_transform(frame) for frame in local_view_clip_raw]))
+            else:
+                indices = torch.arange(0, self.local_frames) % num_total_frames
+                local_view_clip_raw = video_tensor_transformed[indices]
+                local_view_clips.append(
+                    torch.stack([self.clip_augmentation_transform(frame) for frame in local_view_clip_raw]))
+        return global_view_clip, local_view_clips
 
-# Example transform
-transform = T.Compose([
-    T.Resize((224, 224)),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+    def generate_rtm_spatial_mask_for_clip(self):
+        return self.rtm_generator_local()
 
-# Sample usage
-# video_tensor = torch.randn(16, 3, 256, 256)  # [T, C, H, W]
-# vg = ViewGenerator(transform)
-# g_view, l_view = vg.generate_views(video_tensor)
-# mask = vg.generate_masks(method='rtm')
+    def generate_fagtm_mask_from_agg_attention(self, aggregated_attention_map_spatial):
+        num_total_spatial_patches = aggregated_attention_map_spatial.shape[0]
+        num_patches_h = self.image_size_hw[0] // self.tube_patch_size
+        num_patches_w = self.image_size_hw[1] // self.tube_patch_size
+        assert num_total_spatial_patches == num_patches_h * num_patches_w, "Aggregated attention map size mismatch"
+
+        num_visible_patches_N_v = round((1.0 - self.global_mask_ratio_rho) * num_total_spatial_patches)
+        num_candidate_high_attention_N_h = int(np.ceil(self.fagtm_gamma * num_total_spatial_patches))
+
+        sorted_indices = torch.argsort(aggregated_attention_map_spatial, descending=True)
+        high_attention_candidate_indices = sorted_indices[:num_candidate_high_attention_N_h]
+
+        actual_num_to_sample_visible = min(num_visible_patches_N_v, len(high_attention_candidate_indices))
+        if len(high_attention_candidate_indices) == 0 and actual_num_to_sample_visible > 0:  # Edge case: no candidates but still need to make some visible
+            visible_patch_indices = torch.randperm(num_total_spatial_patches,
+                                                   device=aggregated_attention_map_spatial.device)[
+                                    :actual_num_to_sample_visible]
+        elif len(high_attention_candidate_indices) > 0:
+            permuted_high_attention_indices = high_attention_candidate_indices[
+                torch.randperm(len(high_attention_candidate_indices), device=aggregated_attention_map_spatial.device)]
+            visible_patch_indices = permuted_high_attention_indices[:actual_num_to_sample_visible]
+        else:  # No candidates and no visible patches needed
+            visible_patch_indices = torch.tensor([], dtype=torch.long, device=aggregated_attention_map_spatial.device)
+
+        fagtm_mask_flat_spatial = torch.ones(num_total_spatial_patches, dtype=torch.bool,
+                                             device=aggregated_attention_map_spatial.device)
+        if len(visible_patch_indices) > 0:
+            fagtm_mask_flat_spatial[visible_patch_indices] = False
+
+        return fagtm_mask_flat_spatial.view(num_patches_h, num_patches_w)
