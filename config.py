@@ -6,6 +6,7 @@ config = {
         'image_size': 224,
         'patch_size': 16,
         'embed_dim': 768,
+        'num_classes': 2, # For PolypDiag, assuming binary classification (polyp vs. normal)
         'decoder_embed_dim': 256,
         'decoder_depth': 1,
         'decoder_num_heads': 8,
@@ -25,11 +26,11 @@ config = {
         'temperature_teacher': 0.04,
     },
     'data': {
-        'dataset_path': r'D:\detectron2\my_dataset\flatSubset',
-        'num_workers': 0,
-        'global_frames': 8,
-        'num_local_views': 4,
-        'max_frames_per_video_clip_input': 32
+    'dataset_path': r'D:\detectron2\my_dataset\PolypDia_dataset\PolypDiag\PolypDiag', # Updated path for PolypDiag
+    'num_workers': 0, # Consider increasing this if you have many CPU cores and need faster data loading
+    'global_frames': 8, # Keep this as 8, as the fine-tuning will use 8 frames per video
+    'num_local_views': 4,
+    'max_frames_per_video_clip_input': 32
     },
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     'fine_tune': {
@@ -39,6 +40,14 @@ config = {
     'eval': {
         'eval_frames_dir': r'D:\detectron2\my_dataset\test_video',
         'output_features_path': r'D:\detectron2\my_dataset\test_video\results\test_video_features.npy',
-        'weights_path': r'models\trained_mmcrl.pth'
-    }
+        'weights_path': r'models\checkpoint.pth'
+    },
+    'fine_tune': {
+        'pretrained_weights_path': r'models/checkpoint.pth', # Path to your saved student encoder weights (e.g., from train.py output)
+        'freeze_backbone': False, # Set to True to only train the classification head; False to fine-tune entire model
+        'learning_rate': 1e-5, # Start with a smaller LR for fine-tuning
+        'epochs': 20, # As per paper's mention for classification fine-tuning
+        'batch_size': 6, # Adjust based on your GPU memory
+        'save_path': 'fineTuning_Weights/PolypDiag_fineTuning.pth' # Path to save the fine-tuned model
+    },
 }
