@@ -18,7 +18,7 @@ config = {
         'learning_rate': 2e-5,
         'weight_decay': 0.04,
         'warmup_epochs': 10,
-        'momentum': (0.9, 0.999),
+        'momentum': (0.9, 0.999), # This is for pre-training AdamW betas
         'mask_ratio': 0.9,
         'gamma': 0.6,
         'ema_momentum': 0.996,
@@ -34,20 +34,17 @@ config = {
     },
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     'fine_tune': {
-        'pretrained_weights_path': r'C:\Users\Asus\PycharmProjects\PythonProject1\.venv\models\checkpoint.pth', # Keep your path
-        'freeze_backbone': False
+        'pretrained_weights_path': r'C:\Users\Asus\PycharmProjects\PythonProject1\.venv\models\checkpoint.pth', # Path to your saved student encoder weights
+        'freeze_backbone': False, # Set to True to only train the classification head; False to fine-tune entire model
+        'learning_rate': 1e-5, # As per paper for classification with SGD
+        'momentum': 0.9, # As per paper for SGD optimizer
+        'epochs': 20, # As per paper's mention for classification fine-tuning
+        'batch_size': 4, # Changed to 4 as per paper's mention for PolypDiag classification
+        'save_path': 'fineTuning_Weights/PolypDiag_fineTuning.pth' # Path to save the fine-tuned model
     },
     'eval': {
         'eval_frames_dir': r'D:\detectron2\my_dataset\test_video',
         'output_features_path': r'D:\detectron2\my_dataset\test_video\results\test_video_features.npy',
-        'weights_path': r'models\checkpoint.pth'
-    },
-    'fine_tune': {
-        'pretrained_weights_path': r'models/checkpoint.pth', # Path to your saved student encoder weights (e.g., from train.py output)
-        'freeze_backbone': False, # Set to True to only train the classification head; False to fine-tune entire model
-        'learning_rate': 1e-5, # Start with a smaller LR for fine-tuning
-        'epochs': 20, # As per paper's mention for classification fine-tuning
-        'batch_size': 6, # Adjust based on your GPU memory
-        'save_path': 'fineTuning_Weights/PolypDiag_fineTuning.pth' # Path to save the fine-tuned model
+        'weights_path': r'models\checkpoint.pth' # This is likely for a general eval script, fine_tune uses its specific path
     },
 }

@@ -179,23 +179,62 @@ def train_classification():
         num_classes=config['model']['num_classes']
     ).to(device)
 
-    # Load pre-trained weights for the backbone (VisionTransformer)
-    print(f"Attempting to load pre-trained backbone weights from {config['eval']['weights_path']}")
-    try:
-        pretrained_state_dict = torch.load(config['eval']['weights_path'], map_location=device, weights_only=False)
+    best_val_accuracy = 0.0  # Initialize best validation accuracy to 0
+    fine_tuned_checkpoint_path = config['fine_tune']['save_path']
+    original_pretrained_path = config['fine_tune']['pretrained_weights_path']
 
-        # Filter out decoder and projector weights if the saved state_dict contains them
-        filtered_state_dict = {k: v for k, v in pretrained_state_dict.items() if
-                               not k.startswith('decoder.') and not k.startswith('projector.')}
+    if os.path.exists(fine_tuned_checkpoint_path):
+        print(f"Attempting to load fine-tuned checkpoint from {fine_tuned_checkpoint_path}")
+        try:
+            # Load the entire model state_dict
+            checkpoint = torch.load(fine_tuned_checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint)
+            print("Fine-tuned checkpoint loaded successfully. Resuming training from this state.")
+            # If you saved best_val_accuracy in the checkpoint, you would load it here.
+            # For now, we assume it just loads model weights and we'll track accuracy from current run.
+            # Or you could parse your fine_tuning_val_log.csv to find the highest saved accuracy
+            # and initialize best_val_accuracy with it to ensure saving only strictly better models.
+            # For simplicity, we restart tracking best_val_accuracy from 0.0,
+            # ensuring any new improvement gets saved.
 
-        # Load filtered state dict into the backbone of ClassificationModel
-        model.backbone.load_state_dict(filtered_state_dict, strict=False)
-        print("Pre-trained backbone weights loaded successfully.")
-    except Exception as e:
-        print(f"Error loading pre-trained weights: {e}")
+        except Exception as e:
+            print(f"Error loading fine-tuned checkpoint: {e}. Falling back to original pre-trained weights.")
+            # If fine-tuned checkpoint fails, try loading the original pre-trained backbone
+            if os.path.exists(original_pretrained_path):
+                try:
+                    pretrained_state_dict = torch.load(original_pretrained_path, map_location=device,
+                                                       weights_only=False)
+                    # Filter for backbone if the checkpoint contains other parts like decoder/projector
+                    filtered_state_dict = {k: v for k, v in pretrained_state_dict.items() if
+                                           not k.startswith('decoder.') and not k.startswith('projector.')}
+                    model.backbone.load_state_dict(filtered_state_dict, strict=False)
+                    print(f"Original pre-trained backbone weights from {original_pretrained_path} loaded successfully.")
+                except Exception as e_pretrain:
+                    print(
+                        f"Error loading original pre-trained weights: {e_pretrain}. Proceeding with randomly initialized backbone.")
+            else:
+                print(
+                    f"Original pre-trained weights not found at {original_pretrained_path}. Proceeding with randomly initialized backbone.")
+
+    else:  # If fine-tuned checkpoint does not exist, load original pre-trained weights
         print(
-            "Ensure 'config['eval']['weights_path']' points to the correct student encoder .pth file or a compatible model state_dict.")
-        print("Proceeding with randomly initialized backbone. This will likely result in lower performance.")
+            f"Fine-tuned checkpoint not found at {fine_tuned_checkpoint_path}. Attempting to load original pre-trained backbone weights from {original_pretrained_path}")
+        if os.path.exists(original_pretrained_path):
+            try:
+                pretrained_state_dict = torch.load(original_pretrained_path, map_location=device, weights_only=False)
+                # Filter for backbone if the checkpoint contains other parts like decoder/projector
+                filtered_state_dict = {k: v for k, v in pretrained_state_dict.items() if
+                                       not k.startswith('decoder.') and not k.startswith('projector.')}
+                model.backbone.load_state_dict(filtered_state_dict, strict=False)
+                print("Original pre-trained backbone weights loaded successfully.")
+            except Exception as e:
+                print(f"Error loading original pre-trained weights: {e}")
+                print(
+                    "Ensure 'config['fine_tune']['pretrained_weights_path']' points to the correct student encoder .pth file or a compatible model state_dict.")
+                print("Proceeding with randomly initialized backbone. This will likely result in lower performance.")
+        else:
+            print(
+                f"Original pre-trained weights not found at {original_pretrained_path}. Proceeding with randomly initialized backbone.")
 
     # Freeze backbone parameters if specified in config
     if config['fine_tune'].get('freeze_backbone', False):
@@ -205,9 +244,10 @@ def train_classification():
     else:
         print("Backbone unfrozen for fine-tuning. Both backbone and classification head will be trained.")
 
-    optimizer = optim.AdamW(
+    optimizer = optim.SGD(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config['fine_tune']['learning_rate'],
+        momentum=config['fine_tune']['momentum'],
         weight_decay=config['training']['weight_decay']
     )
     criterion = nn.CrossEntropyLoss().to(device)
