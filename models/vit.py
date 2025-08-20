@@ -189,12 +189,10 @@ class VisionTransformer(nn.Module):
         if is_video_clip_input and T_clip > 1:
             # Aggregate CLS features over the temporal dimension for video clips
             # cls_features_frames is initially [B_orig * T_clip, embed_dim]
-            # We reshape it to [B_orig, T_clip, embed_dim] and then take the mean over T_clip
             cls_features = cls_features_frames.view(B_orig, T_clip, -1).mean(dim=1)
 
             # all_encoded_tokens_frames is [B_orig * T_clip, 1 + num_patches, embed_dim].
             # For classification, when use_decoder is False (as in ClassificationModel),
-            # this tensor is not used, so no further aggregation is strictly necessary here.
             all_encoded_tokens = all_encoded_tokens_frames
         else:  # Single frame input (B, C, H, W)
             cls_features = cls_features_frames
