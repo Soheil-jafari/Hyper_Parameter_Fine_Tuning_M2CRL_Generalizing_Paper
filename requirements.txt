@@ -1,0 +1,23 @@
+# Core
+numpy>=1.23
+pandas>=2.0
+tqdm>=4.65
+
+# Deep Learning
+torch
+torchvision
+timm>=0.9.8
+
+# Vision / IO
+opencv-python>=4.8
+Pillow>=9.5
+
+# ML / Clustering
+scikit-learn>=1.2
+
+# Plotting
+matplotlib>=3.7
+
+# (Optional but common)
+scipy>=1.10
+einops>=0.6
